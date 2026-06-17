@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Model weights — large binaries, fetched via download script, not committed
+checkpoints/
+*.pt
+*.pth
+
+# Vendored third-party model code — pulled fresh by scripts/setup_depth_anything.sh
+third_party/
+
+# KITTI data and run outputs
+data/kitti/
+outputs/
