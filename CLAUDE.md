@@ -307,16 +307,22 @@ after detection.
 Applied in `FusionEngine._compute_risk()` after Kalman update:
 
 ```
-depth_velocity < -RISK_APPROACH_THRESH  →  APPROACHING
-depth_velocity >  RISK_APPROACH_THRESH  →  RECEDING
+depth_velocity >  RISK_APPROACH_THRESH  →  APPROACHING
+depth_velocity < -RISK_APPROACH_THRESH  →  RECEDING
 else                                    →  STATIC
 ```
+
+Corrected from the originally-stated signs: Depth Anything v2 outputs disparity
+(higher value = closer to camera), so an approaching object has *increasing*
+disparity, i.e. positive depth_velocity. See `RiskLevel` in `data_types.py` for
+the same note. This was caught and fixed while building `data_types.py`, before
+`FusionEngine` (which actually applies the rule) was written.
 
 `RISK_APPROACH_THRESH` is set in `configs/default.yaml`. Default: 0.02
 (normalised disparity units per frame).
 
 Secondary signal (not yet implemented, v2 upgrade): box area growth rate from
-`trajectory_2d`. An object whose 2D box is growing AND has negative depth velocity
+`trajectory_2d`. An object whose 2D box is growing AND has positive depth velocity
 gets a higher confidence APPROACHING classification.
 
 ---
