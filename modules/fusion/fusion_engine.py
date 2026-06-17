@@ -97,6 +97,7 @@ class FusionEngine:
             track_id=obj.track_id,
             class_id=obj.class_id,
             class_name=obj.class_name,
+            initial_box=obj.xyxy,
             initial_depth=initial_depth,
             trajectory_maxlen=self.trajectory_length,
             kalman=kalman,
@@ -111,6 +112,7 @@ class FusionEngine:
         independent of whether the depth reading itself succeeded.
         """
         state.frames_since_update = 0
+        state.box = obj.xyxy
 
         if depth_reading is not None:
             state.kalman.update(depth_reading)

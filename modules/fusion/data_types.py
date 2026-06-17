@@ -173,6 +173,14 @@ class TrackState:
     class_id: int
     class_name: str
 
+    # Most recent known bounding box (x1, y1, x2, y2). Not part of the original
+    # CLAUDE.md spec — added when building the Visualiser (module 9), which
+    # needs box corners to draw a rectangle and a label anchor point; the
+    # trajectory_2d centroid alone isn't enough geometry for that. Updated
+    # every frame FusionEngine sees a real detection for this track; left
+    # unchanged (last known position) on frames where the track is missing.
+    box: tuple[float, float, float, float] | None = None
+
     # Depth (normalised disparity units)
     depth_raw: float = 0.0        # raw reading from depth map this frame
     depth_smoothed: float = 0.0   # Kalman-filtered output
@@ -196,6 +204,7 @@ class TrackState:
         track_id: int,
         class_id: int,
         class_name: str,
+        initial_box: tuple[float, float, float, float],
         initial_depth: float,
         trajectory_maxlen: int,
         kalman: "DepthKalmanFilter",
@@ -211,6 +220,7 @@ class TrackState:
             track_id=track_id,
             class_id=class_id,
             class_name=class_name,
+            box=initial_box,
             depth_raw=initial_depth,
             depth_smoothed=initial_depth,
             depth_velocity=0.0,
@@ -225,6 +235,7 @@ class TrackState:
             "track_id":           self.track_id,
             "class_id":           self.class_id,
             "class_name":         self.class_name,
+            "box":                list(self.box) if self.box is not None else None,
             "depth_raw":          round(self.depth_raw, 4),
             "depth_smoothed":     round(self.depth_smoothed, 4),
             "depth_velocity":     round(self.depth_velocity, 4),

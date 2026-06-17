@@ -188,11 +188,12 @@ class TrackState:
     track_id: int
     class_id: int
     class_name: str
+    box: tuple[float, float, float, float] | None  # most recent known (x1,y1,x2,y2)
 
     # Depth (relative disparity units, normalised per-frame)
     depth_raw: float               # this frame's raw reading
     depth_smoothed: float          # Kalman-filtered output
-    depth_velocity: float          # rate of change (negative = approaching)
+    depth_velocity: float          # rate of change (positive = approaching, see RiskLevel)
 
     # Trajectory (last N frames of 2D box centroid + depth)
     trajectory_2d: deque           # deque of (cx, cy) tuples
@@ -209,11 +210,22 @@ class TrackState:
 This is the central object in the system. `FusionEngine` owns a dict of these,
 keyed by `track_id`. All downstream consumers (visualiser, logger) read from this.
 
-### `RiskScore` (enum)
+`box` was added while building the Visualiser (module 9) — the original spec
+only carried a centroid trajectory, which isn't enough geometry to draw a
+rectangle. `FusionEngine` sets it from the matched `TrackedObject.xyxy` every
+frame the track is seen, and leaves it at its last known value on frames where
+the track is missing.
+
+### `RiskLevel` (enum)
+
+Named `RiskLevel` in code, not `RiskScore` as originally written here — implemented
+in module 1 (`data_types.py`) and kept the renamed/corrected version since
+"Score" implied a magnitude this enum doesn't carry.
+
 ```python
-class RiskScore(Enum):
-    APPROACHING = "APPROACHING"   # depth_velocity < -threshold
-    RECEDING    = "RECEDING"      # depth_velocity > +threshold
+class RiskLevel(Enum):
+    APPROACHING = "APPROACHING"   # depth_velocity > +threshold
+    RECEDING    = "RECEDING"      # depth_velocity < -threshold
     STATIC      = "STATIC"        # |depth_velocity| <= threshold
 ```
 
