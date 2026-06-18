@@ -15,6 +15,12 @@ from modules.fusion.track_kalman import DepthKalmanFilter
 # point normalise_depth_map() establishes for every frame.
 _NEUTRAL_INITIAL_DEPTH = 1.0
 
+# Floor for depth_smoothed when fitting the ego-motion scale factor, guarding
+# division/squaring blowup if a track's depth ever drifts near zero. Real
+# depth values cluster around 1.0 (the per-frame median), so this floor is
+# never expected to bind in practice.
+_MIN_DEPTH_FOR_EGO_MOTION_FIT = 0.05
+
 
 class FusionEngine:
     """
@@ -32,15 +38,21 @@ class FusionEngine:
     from a single moving camera with no other motion sensor. Confirmed
     directly against real KITTI footage: every parked car along a street the
     dashcam drove past showed APPROACHING for the entire approach, despite
-    never moving. _estimate_ego_motion() approximates the camera's own
-    contribution as the median depth_velocity across all currently tracked
-    objects (most of a road scene is stationary background, so the median
-    over all tracks approximates pure ego-motion — same median-over-mean
-    robustness reasoning as extract_box_depth). _compute_risk() then
-    classifies on relative_velocity (depth_velocity minus that baseline),
-    not raw depth_velocity. See CLAUDE.md Critical Design Decision on
-    ego-motion for the full reasoning, including the documented limitation
-    with fewer than 2 tracks.
+    never moving.
+
+    A flat per-frame velocity offset (first version of this fix) isn't
+    enough: motion parallax means a stationary object's own depth_velocity
+    from ego-motion alone scales with the SQUARE of how close it already is
+    (nearby things sweep past faster than far things at the same vehicle
+    speed) — so two equally-stationary cars at different distances need
+    different baselines, not one shared number. _fit_ego_motion_scale()
+    fits expected_velocity = k * depth_smoothed**2 from the population of
+    currently tracked objects (k acts as a stand-in for the vehicle's own
+    speed, inferred from the scene rather than a sensor), and _compute_risk()
+    classifies on relative_velocity = depth_velocity - k * depth_smoothed**2.
+    See CLAUDE.md Critical Design Decision on ego-motion for the derivation,
+    the documented limitation with fewer than 2 tracks, and validation
+    against KITTI's real GPS/IMU (oxts) vehicle-speed data.
 
     Note on track_id reuse: CLAUDE.md's gotcha about reinitialising the Kalman
     filter when ByteTrack reassigns an old ID to a new object assumes a backend
@@ -69,6 +81,7 @@ class FusionEngine:
         self.approach_threshold = approach_threshold
 
         self.track_states: dict[int, TrackState] = {}
+        self.last_ego_motion_scale: float = 0.0
 
     def update(self, tracked_objects: list[TrackedObject], depth_map: np.ndarray) -> dict[int, TrackState]:
         """
@@ -94,11 +107,14 @@ class FusionEngine:
             if track_id not in seen_ids:
                 self._update_missing_track(state)
 
-        ego_motion_velocity = self._estimate_ego_motion()
+        ego_motion_scale = self._fit_ego_motion_scale()
+        self.last_ego_motion_scale = ego_motion_scale  # exposed for offline validation against real ego-speed
 
         for state in self.track_states.values():
             state.age += 1
-            state.relative_velocity = state.depth_velocity - ego_motion_velocity
+            depth_sq = max(state.depth_smoothed, _MIN_DEPTH_FOR_EGO_MOTION_FIT) ** 2
+            expected_velocity = ego_motion_scale * depth_sq
+            state.relative_velocity = state.depth_velocity - expected_velocity
             state.risk_level = self._compute_risk(state.relative_velocity)
 
         self._cull_dead_tracks()
@@ -156,33 +172,43 @@ class FusionEngine:
         state.depth_velocity = state.kalman.velocity
         state.frames_since_update += 1
 
-    def _estimate_ego_motion(self) -> float:
+    def _fit_ego_motion_scale(self) -> float:
         """
-        Approximates the camera's own forward-motion contribution to every
-        track's depth_velocity, as the median depth_velocity across all
-        currently tracked objects this frame.
+        Fits k in expected_velocity = k * depth_smoothed**2 — the ego-motion
+        contribution to a STATIONARY object's depth_velocity, as a function
+        of its own current depth.
 
-        Median, not mean, for the same reason extract_box_depth uses median
-        over mean: it's robust to a minority of outliers — here, the small
-        number of tracks that ARE genuinely moving on their own, which
-        shouldn't be allowed to drag the baseline away from the majority
-        stationary-background signal.
+        Derivation: disparity ~= C / Z for true distance Z and some camera-
+        and-normalisation-dependent constant C. For a stationary object with
+        the camera closing at speed V_ego, dZ/dt = -V_ego, so:
+            d(disparity)/dt = -C/Z^2 * dZ/dt = V_ego * (disparity^2 / C)
+        i.e. depth_velocity = k * depth_smoothed**2, where k = V_ego / C
+        bundles the (unknown) true ego-speed and calibration constant into
+        one fittable number per frame. k acts as a stand-in for the
+        vehicle's own speed, inferred from the scene rather than a sensor —
+        validated against KITTI's real recorded vehicle speed (oxts 'vf')
+        in scripts/validate_ego_motion.py.
 
-        Honest limitation: this infers ego-motion from object motion, not
-        from an independent signal (no visual odometry, no IMU/GPS — KITTI's
-        own oxts data exists but isn't wired into this project). With fewer
-        than 2 tracks the median collapses to that single track's own
-        velocity, making its relative_velocity always exactly 0 (STATIC)
-        regardless of its real motion — there's no "other tracks" to compare
-        against. This degrades gracefully (defaults to the old, uncompensated
-        behaviour's blind spot in reverse) rather than failing loudly, which
-        is the right tradeoff for a monitor that should stay usable on sparse
-        scenes rather than refuse to classify anything.
+        k is fit as the median of (depth_velocity_i / depth_smoothed_i**2)
+        across all currently tracked objects — median, not mean, for the
+        same reason extract_box_depth uses median over mean: robust to the
+        minority of tracks that ARE genuinely moving on their own, which
+        shouldn't drag the fit away from the majority stationary-background
+        signal.
+
+        Honest limitation: with fewer than 2 tracks, the median collapses to
+        that single track's own ratio, making its expected_velocity exactly
+        equal to its own depth_velocity and relative_velocity always exactly
+        0 (STATIC) regardless of its real motion — there's no other track to
+        compare against. Degrades gracefully rather than failing loudly.
         """
-        velocities = [state.depth_velocity for state in self.track_states.values()]
-        if not velocities:
+        ratios = [
+            state.depth_velocity / (max(state.depth_smoothed, _MIN_DEPTH_FOR_EGO_MOTION_FIT) ** 2)
+            for state in self.track_states.values()
+        ]
+        if not ratios:
             return 0.0
-        return float(np.median(velocities))
+        return float(np.median(ratios))
 
     def _compute_risk(self, relative_velocity: float) -> RiskLevel:
         """

@@ -300,7 +300,7 @@ first, profile it, and add async only if throughput is genuinely insufficient.
 `ThreadPoolExecutor` with a shared frame queue. Both produce results that the
 fusion engine consumes once both are ready.
 
-### 6. Ego-motion compensation via median-velocity baseline
+### 6. Ego-motion compensation via a depth-squared scale fit
 
 **The problem:** `depth_velocity` alone cannot distinguish "the camera is
 driving toward a stationary object" from "the object is driving toward the
@@ -316,30 +316,74 @@ are actually a collision concern (a car merging into your lane, a pedestrian
 stepping into the road) — not every object you happen to be driving toward,
 which on any forward-moving road is nearly everything in frame.
 
-**Our fix:** `FusionEngine._estimate_ego_motion()` computes the median
-`depth_velocity` across all currently tracked objects each frame, and
-`_compute_risk()` classifies on `relative_velocity` (`depth_velocity` minus
-that baseline) instead of raw `depth_velocity`. Median, not mean, for the
-same robustness reason `extract_box_depth` uses median over mean: most
-objects in a road scene are stationary background, so their shared
-ego-motion-only velocity dominates the median, and the minority of genuinely
-moving objects don't drag the baseline toward themselves.
+**First attempt (superseded) — flat median-velocity baseline:**
+`FusionEngine` originally computed the median `depth_velocity` across all
+currently tracked objects each frame and subtracted that single flat number
+from every track. This was a real improvement (confirmed on real footage:
+risk counts went from `{STATIC: 63, APPROACHING: 250, RECEDING: 0}` to a much
+more balanced `{STATIC: 125, APPROACHING: 99, RECEDING: 89}`), but it doesn't
+fully work: motion parallax means a stationary object's own depth_velocity
+from ego-motion alone scales with the SQUARE of how close it already is —
+nearby things sweep past faster than far things at the same vehicle speed.
+A flat offset implicitly assumes every stationary object should show the same
+depth_velocity regardless of distance, which is physically wrong, and shows
+up exactly as: two equally-parked cars at different distances along the same
+street get classified differently (one APPROACHING, one STATIC) even though
+neither is moving.
 
-**Why not visual odometry or KITTI's oxts (GPS/IMU) data:** oxts only exists
-for KITTI and would violate the project's explicit goal of extending to live
-webcam input without code changes (a webcam has no GPS/IMU). True visual
-odometry (estimating camera motion from optical flow or feature matching) is
-the architecturally "correct" fix but a substantial computer-vision task on
-its own — out of scope until the median-baseline approach proves insufficient
-in practice.
+**Current fix — depth-squared scale fit:** in a pinhole/disparity model,
+disparity ≈ C/Z for true distance Z and some camera-and-normalisation
+constant C. For a stationary object with the camera closing at speed
+`V_ego` (dZ/dt = -V_ego), this gives:
 
-**Known limitation:** this infers ego-motion from object motion, not an
-independent signal. With fewer than 2 tracks, the median collapses to that
-single track's own velocity, making its `relative_velocity` always exactly 0
-(STATIC) regardless of its real motion — there's nothing else to compare
-against. Accepted as a graceful degradation (a sparse scene falls back to
-"can't tell, assume static" rather than refusing to classify) rather than a
-blocking issue.
+```
+d(disparity)/dt = -C/Z² · dZ/dt = V_ego · disparity² / C
+```
+
+i.e. `depth_velocity = k · depth_smoothed²`, where `k = V_ego / C` bundles
+the (unknown) true ego-speed and calibration constant into one fittable
+number per frame. `FusionEngine._fit_ego_motion_scale()` fits `k` as the
+median of `depth_velocity_i / depth_smoothed_i²` across all currently tracked
+objects (median, not mean, for the same outlier-robustness reason
+`extract_box_depth` uses median over mean). `_compute_risk()` then classifies
+on `relative_velocity = depth_velocity - k · depth_smoothed²`, not raw
+`depth_velocity`. `k` is exposed as `FusionEngine.last_ego_motion_scale` for
+offline validation.
+
+**Validated against ground truth:** KITTI ships real recorded vehicle speed
+(the `oxts` GPS/IMU log, field `vf` = forward velocity) alongside the camera
+images, which this project doesn't otherwise use. `scripts/validate_ego_motion.py`
+runs the pipeline against a real sequence, captures `last_ego_motion_scale`
+per frame, and correlates it against the sequence's real `vf` — confirming
+the fitted `k` actually tracks genuine vehicle speed rather than being a
+plausible-looking but unfounded heuristic.
+
+**Why not use oxts (or visual odometry) directly in production:** oxts only
+exists for KITTI and would violate the project's explicit goal of extending
+to live webcam input without code changes (a webcam has no GPS/IMU). True
+visual odometry (estimating camera motion from optical flow or feature
+matching) is the architecturally "purest" fix but a substantial computer-
+vision task on its own — out of scope until the depth-squared fit proves
+insufficient in practice. oxts is used here only as a validation signal, not
+as a runtime dependency.
+
+**Known limitations:**
+- This infers ego-motion from object motion, not an independent signal. With
+  fewer than 2 tracks, the fitted `k` collapses to that single track's own
+  ratio, making its `relative_velocity` always exactly 0 (STATIC) regardless
+  of its real motion — there's nothing else to compare against. Accepted as
+  graceful degradation (a sparse scene falls back to "can't tell, assume
+  static") rather than a blocking issue.
+- The depth-squared extrapolation is sensitive when a track's depth diverges
+  far from the population `k` was fit on: caught directly while writing this
+  module's tests — a synthetic "linearly growing depth" track (NOT a
+  solution to `depth_velocity = k·depth²`) started out correctly classified
+  APPROACHING but silently flipped to RECEDING after enough frames, once its
+  depth grew to roughly double the background tracks' depth and the squared
+  extrapolation overshot. Real independently-moving objects don't follow a
+  flat-offset trajectory either — this is a property of the model worth
+  knowing about, not a bug fixed by clamping; see `tests/test_fusion.py`'s
+  `_ego_motion_trajectory` helper for physically self-consistent test data.
 
 ---
 

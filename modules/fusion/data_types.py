@@ -187,14 +187,16 @@ class TrackState:
     depth_velocity: float = 0.0   # d(depth_smoothed)/dt; positive = approaching.
                                    # NOT ego-motion-compensated — see relative_velocity.
 
-    # depth_velocity minus FusionEngine's estimated ego-motion baseline for
-    # this frame. A car parked at the roadside shows positive depth_velocity
-    # throughout an approach (the camera is moving toward it), but should
-    # show relative_velocity near zero, since it isn't moving relative to
-    # the rest of the (also static) scene. This is what _compute_risk()
-    # actually classifies on — see CLAUDE.md "Critical Design Decisions"
-    # for why depth_velocity alone can't distinguish ego-motion from
-    # genuine object motion.
+    # depth_velocity minus FusionEngine's estimated ego-motion contribution
+    # for this frame (k * depth_smoothed**2, fit from the whole track
+    # population — see _fit_ego_motion_scale). A car parked at the roadside
+    # shows positive depth_velocity throughout an approach (the camera is
+    # moving toward it), but should show relative_velocity near zero, since
+    # it isn't moving relative to the rest of the (also static) scene. This
+    # is what _compute_risk() actually classifies on — see CLAUDE.md
+    # "Critical Design Decisions" #6 for the derivation (and why a flat
+    # per-frame offset isn't enough — motion parallax means closer static
+    # objects need a different baseline than farther ones).
     relative_velocity: float = 0.0
 
     # Trajectory ring buffers; maxlen is set at track creation via TrackState.create()
