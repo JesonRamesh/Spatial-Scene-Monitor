@@ -1,0 +1,42 @@
+detection:
+  model: yolov8n.pt
+  input_size: 640
+  confidence_threshold: 0.3
+  nms_threshold: 0.45
+  class_filter: [0, 1, 2, 3, 5, 7]
+
+tracking:
+  # ByteTrack params — see ByteTrack paper for meaning
+  track_thresh: 0.5
+  track_buffer: 30       # frames to keep lost track alive
+  match_thresh: 0.8
+  frame_rate: 10          # KITTI sequences are ~10 FPS
+
+depth:
+  model_size: vits        # vits | vitb | vitl
+  input_size: 518          # Depth Anything v2 native input size
+  checkpoint_dir: checkpoints
+  normalise: true          # see CLAUDE.md note: normalisation is currently always
+                            # performed by FusionEngine and this flag is not wired
+                            # to anything yet — kept for parity with the documented
+                            # parameter list, not consumed by any module today.
+
+fusion:
+  trajectory_length: 30   # frames to keep in trajectory deques
+  kalman_process_noise: 0.01
+  kalman_measurement_noise: 0.1
+  max_frames_missing: 10   # drop TrackState after this many missed frames
+
+risk:
+  approach_threshold: 0.02
+
+output:
+  log_json: true
+  log_dir: outputs/json
+  frame_dir: outputs/frames   # documented but not wired to any module yet — no
+                               # save_frames toggle exists alongside save_video/
+                               # log_json, so main.py does not write individual
+                               # frame images in this build. See CLAUDE.md note.
+  save_video: true
+  video_path: outputs/annotated.mp4
+  display: false            # set true for live window (slower)

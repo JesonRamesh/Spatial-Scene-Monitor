@@ -1,0 +1,16 @@
+# Core perception stack
+ultralytics>=8.3
+opencv-python>=4.9
+lap>=0.5  # ByteTrack's assignment solver; ultralytics auto-installs this on first
+          # use if missing, but listing it avoids that mid-run surprise
+
+# Deep learning — install torch/torchvision per-machine if you need a specific
+# CUDA build (UCL cluster) or MPS-enabled build (MacBook); these are minimums.
+torch>=2.2
+torchvision>=0.17
+
+numpy>=1.26
+PyYAML>=6.0
+
+# Depth Anything v2 checkpoint download (scripts/setup_depth_anything.sh)
+huggingface_hub>=0.20
