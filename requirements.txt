@@ -14,3 +14,6 @@ PyYAML>=6.0
 
 # Depth Anything v2 checkpoint download (scripts/setup_depth_anything.sh)
 huggingface_hub>=0.20
+
+# Test suite (tests/)
+pytest>=8.0
