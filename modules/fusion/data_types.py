@@ -184,7 +184,18 @@ class TrackState:
     # Depth (normalised disparity units)
     depth_raw: float = 0.0        # raw reading from depth map this frame
     depth_smoothed: float = 0.0   # Kalman-filtered output
-    depth_velocity: float = 0.0   # d(depth_smoothed)/dt; positive = approaching
+    depth_velocity: float = 0.0   # d(depth_smoothed)/dt; positive = approaching.
+                                   # NOT ego-motion-compensated — see relative_velocity.
+
+    # depth_velocity minus FusionEngine's estimated ego-motion baseline for
+    # this frame. A car parked at the roadside shows positive depth_velocity
+    # throughout an approach (the camera is moving toward it), but should
+    # show relative_velocity near zero, since it isn't moving relative to
+    # the rest of the (also static) scene. This is what _compute_risk()
+    # actually classifies on — see CLAUDE.md "Critical Design Decisions"
+    # for why depth_velocity alone can't distinguish ego-motion from
+    # genuine object motion.
+    relative_velocity: float = 0.0
 
     # Trajectory ring buffers; maxlen is set at track creation via TrackState.create()
     trajectory_2d:    deque = field(default_factory=lambda: deque(maxlen=30))
@@ -239,6 +250,7 @@ class TrackState:
             "depth_raw":          round(self.depth_raw, 4),
             "depth_smoothed":     round(self.depth_smoothed, 4),
             "depth_velocity":     round(self.depth_velocity, 4),
+            "relative_velocity":  round(self.relative_velocity, 4),
             "risk_level":         self.risk_level.value,
             "trajectory_2d":      [list(p) for p in self.trajectory_2d],
             "trajectory_depth":   list(self.trajectory_depth),

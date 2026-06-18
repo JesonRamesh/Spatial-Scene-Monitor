@@ -193,7 +193,11 @@ class TrackState:
     # Depth (relative disparity units, normalised per-frame)
     depth_raw: float               # this frame's raw reading
     depth_smoothed: float          # Kalman-filtered output
-    depth_velocity: float          # rate of change (positive = approaching, see RiskLevel)
+    depth_velocity: float          # rate of change (positive = approaching, see RiskLevel).
+                                    # NOT ego-motion-compensated — see relative_velocity.
+    relative_velocity: float       # depth_velocity minus FusionEngine's estimated ego-motion
+                                    # baseline for this frame; this is what risk is computed
+                                    # from. See Critical Design Decision #6.
 
     # Trajectory (last N frames of 2D box centroid + depth)
     trajectory_2d: deque           # deque of (cx, cy) tuples
@@ -296,6 +300,47 @@ first, profile it, and add async only if throughput is genuinely insufficient.
 `ThreadPoolExecutor` with a shared frame queue. Both produce results that the
 fusion engine consumes once both are ready.
 
+### 6. Ego-motion compensation via median-velocity baseline
+
+**The problem:** `depth_velocity` alone cannot distinguish "the camera is
+driving toward a stationary object" from "the object is driving toward the
+camera" — a single moving camera with no other motion sensor produces an
+identical increasing-disparity signature either way. This was not caught
+during initial development (all early testing used synthetic depth maps with
+a stationary virtual camera) — it surfaced only when testing against real
+KITTI dashcam footage: every parked car along a street the camera drove past
+showed APPROACHING risk for its entire approach, despite never moving.
+
+**Why this matters:** the whole point of a risk score is to flag objects that
+are actually a collision concern (a car merging into your lane, a pedestrian
+stepping into the road) — not every object you happen to be driving toward,
+which on any forward-moving road is nearly everything in frame.
+
+**Our fix:** `FusionEngine._estimate_ego_motion()` computes the median
+`depth_velocity` across all currently tracked objects each frame, and
+`_compute_risk()` classifies on `relative_velocity` (`depth_velocity` minus
+that baseline) instead of raw `depth_velocity`. Median, not mean, for the
+same robustness reason `extract_box_depth` uses median over mean: most
+objects in a road scene are stationary background, so their shared
+ego-motion-only velocity dominates the median, and the minority of genuinely
+moving objects don't drag the baseline toward themselves.
+
+**Why not visual odometry or KITTI's oxts (GPS/IMU) data:** oxts only exists
+for KITTI and would violate the project's explicit goal of extending to live
+webcam input without code changes (a webcam has no GPS/IMU). True visual
+odometry (estimating camera motion from optical flow or feature matching) is
+the architecturally "correct" fix but a substantial computer-vision task on
+its own — out of scope until the median-baseline approach proves insufficient
+in practice.
+
+**Known limitation:** this infers ego-motion from object motion, not an
+independent signal. With fewer than 2 tracks, the median collapses to that
+single track's own velocity, making its `relative_velocity` always exactly 0
+(STATIC) regardless of its real motion — there's nothing else to compare
+against. Accepted as a graceful degradation (a sparse scene falls back to
+"can't tell, assume static" rather than refusing to classify) rather than a
+blocking issue.
+
 ---
 
 ## Class Filter (Road Scene)
@@ -316,13 +361,24 @@ after detection.
 
 ## Risk Score Rules
 
-Applied in `FusionEngine._compute_risk()` after Kalman update:
+Applied in `FusionEngine._compute_risk()`, after Kalman update AND ego-motion
+compensation (see Critical Design Decision #6):
 
 ```
-depth_velocity >  RISK_APPROACH_THRESH  →  APPROACHING
-depth_velocity < -RISK_APPROACH_THRESH  →  RECEDING
-else                                    →  STATIC
+relative_velocity >  RISK_APPROACH_THRESH  →  APPROACHING
+relative_velocity < -RISK_APPROACH_THRESH  →  RECEDING
+else                                       →  STATIC
 ```
+
+Classifies on `relative_velocity` (`depth_velocity` minus `FusionEngine`'s
+estimated ego-motion baseline for the frame), not raw `depth_velocity` directly.
+Originally this rule used raw `depth_velocity`, which was corrected for sign
+(see below) but still produced a real bug: confirmed against real KITTI dashcam
+footage, every parked car along a street the camera drove past showed
+APPROACHING for its entire approach, despite never moving — because a moving
+camera approaching a stationary object produces the same increasing-disparity
+signature as the object approaching the camera. Ego-motion compensation fixed
+this; see Critical Design Decision #6 for the full reasoning.
 
 Corrected from the originally-stated signs: Depth Anything v2 outputs disparity
 (higher value = closer to camera), so an approaching object has *increasing*

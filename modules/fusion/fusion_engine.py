@@ -22,8 +22,25 @@ class FusionEngine:
 
     Per frame: normalises the raw depth map (DepthEstimator deliberately
     doesn't), then for every TrackedObject either births a new TrackState or
-    advances an existing one's Kalman filter, ages every track, computes risk,
-    and drops tracks that have been missing too long.
+    advances an existing one's Kalman filter, estimates and compensates for
+    ego-motion, ages every track, computes risk, and drops tracks that have
+    been missing too long.
+
+    Ego-motion compensation: depth_velocity alone can't distinguish "the
+    camera is driving toward a stationary object" from "the object is moving
+    toward the camera" — both produce identical increasing-disparity readings
+    from a single moving camera with no other motion sensor. Confirmed
+    directly against real KITTI footage: every parked car along a street the
+    dashcam drove past showed APPROACHING for the entire approach, despite
+    never moving. _estimate_ego_motion() approximates the camera's own
+    contribution as the median depth_velocity across all currently tracked
+    objects (most of a road scene is stationary background, so the median
+    over all tracks approximates pure ego-motion — same median-over-mean
+    robustness reasoning as extract_box_depth). _compute_risk() then
+    classifies on relative_velocity (depth_velocity minus that baseline),
+    not raw depth_velocity. See CLAUDE.md Critical Design Decision on
+    ego-motion for the full reasoning, including the documented limitation
+    with fewer than 2 tracks.
 
     Note on track_id reuse: CLAUDE.md's gotcha about reinitialising the Kalman
     filter when ByteTrack reassigns an old ID to a new object assumes a backend
@@ -77,9 +94,12 @@ class FusionEngine:
             if track_id not in seen_ids:
                 self._update_missing_track(state)
 
+        ego_motion_velocity = self._estimate_ego_motion()
+
         for state in self.track_states.values():
             state.age += 1
-            state.risk_level = self._compute_risk(state.depth_velocity)
+            state.relative_velocity = state.depth_velocity - ego_motion_velocity
+            state.risk_level = self._compute_risk(state.relative_velocity)
 
         self._cull_dead_tracks()
         return self.track_states
@@ -136,14 +156,45 @@ class FusionEngine:
         state.depth_velocity = state.kalman.velocity
         state.frames_since_update += 1
 
-    def _compute_risk(self, depth_velocity: float) -> RiskLevel:
+    def _estimate_ego_motion(self) -> float:
         """
-        Disparity convention: higher = closer, so an approaching object has
-        positive depth_velocity. See RiskLevel docstring in data_types.py.
+        Approximates the camera's own forward-motion contribution to every
+        track's depth_velocity, as the median depth_velocity across all
+        currently tracked objects this frame.
+
+        Median, not mean, for the same reason extract_box_depth uses median
+        over mean: it's robust to a minority of outliers — here, the small
+        number of tracks that ARE genuinely moving on their own, which
+        shouldn't be allowed to drag the baseline away from the majority
+        stationary-background signal.
+
+        Honest limitation: this infers ego-motion from object motion, not
+        from an independent signal (no visual odometry, no IMU/GPS — KITTI's
+        own oxts data exists but isn't wired into this project). With fewer
+        than 2 tracks the median collapses to that single track's own
+        velocity, making its relative_velocity always exactly 0 (STATIC)
+        regardless of its real motion — there's no "other tracks" to compare
+        against. This degrades gracefully (defaults to the old, uncompensated
+        behaviour's blind spot in reverse) rather than failing loudly, which
+        is the right tradeoff for a monitor that should stay usable on sparse
+        scenes rather than refuse to classify anything.
         """
-        if depth_velocity > self.approach_threshold:
+        velocities = [state.depth_velocity for state in self.track_states.values()]
+        if not velocities:
+            return 0.0
+        return float(np.median(velocities))
+
+    def _compute_risk(self, relative_velocity: float) -> RiskLevel:
+        """
+        Classifies on relative_velocity (ego-motion-compensated), not raw
+        depth_velocity — see _estimate_ego_motion(). Disparity convention:
+        higher = closer, so an object closing distance faster than the
+        background has positive relative_velocity. See RiskLevel docstring
+        in data_types.py.
+        """
+        if relative_velocity > self.approach_threshold:
             return RiskLevel.APPROACHING
-        if depth_velocity < -self.approach_threshold:
+        if relative_velocity < -self.approach_threshold:
             return RiskLevel.RECEDING
         return RiskLevel.STATIC
 
