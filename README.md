@@ -81,8 +81,6 @@ Tested against three real KITTI Raw sequences, chosen to stress different parts 
 | `2011_09_28_drive_0047` | Campus, pedestrians | 31 | 9 (7 person, 2 car) | 6 | 32.8% | 36.5% | 30.7% |
 | `2011_09_26_drive_0011` | Busy signalled intersection | 233 | 25 (16 car, 3 person, 2 bus, 3 truck, 1 bicycle) | 9 | 54.4% | 25.2% | 20.4% |
 
-<!-- TODO: paste an annotated frame from drive_0011 here — the busy intersection
-     with multiple stacked, non-overlapping badges (e.g. frame 118). -->
 ![Busy intersection — multiple tracked classes with stacked badges](assets/busy_intersection_example.png)
 
 **Throughput:** ~0.27–0.29 s/frame end-to-end (detection + tracking + depth + fusion + render) on an Apple M4 Pro (MPS), consistent across both the 108-frame and 233-frame sequences.
@@ -109,17 +107,12 @@ Risk distribution on `2011_09_26_drive_0001` (parked cars only — nothing in th
 
 Every object in this sequence is parked. With no compensation, every car a moving camera approached was flagged APPROACHING for its entire time in frame — a 0% true-negative rate on stationary objects. The final model reduces false APPROACHING flags by 82% relative to the uncompensated baseline.
 
-<!-- TODO: paste a before/after pair here — e.g. a frame from the uncompensated
-     run (wall of red boxes) next to the same frame from the final run
-     (mixed grey/red/green boxes). -->
-![Before vs after ego-motion compensation](assets/ego_motion_before_after.png)
+![Before vs after ego-motion compensation, same frame](assets/ego_motion_before_after.png)
 
 ### Test suite
 
 24/24 tests passing (`pytest tests/`) across detector parsing, depth extraction/normalisation, Kalman filter convergence and noise rejection, and fusion engine risk classification — including the depth-squared ego-motion model exercised against physically self-consistent synthetic trajectories.
 
-<!-- TODO: paste an annotated frame from drive_0047 here — pedestrians showing
-     mixed APPROACHING/RECEDING states from genuine independent motion. -->
 ![Pedestrians with independent motion — mixed risk states](assets/pedestrians_example.png)
 
 ---
